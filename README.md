@@ -12,8 +12,7 @@ Ecommerce-Cart-Abandonment-Prediction/
 ├── data/
 │   ├── raw_data.csv
 │   ├── processed_data.csv
-├── notebooks/
-│   ├── e_commerce_cart_abandonment.ipynb
+├── e_commerce_cart_abandonment.ipynb
 ├── reports/
 │   ├── final_report.pdf
 │   ├── draft_report.md
