@@ -1,5 +1,10 @@
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import time
+from memory_profiler import memory_usage
 
 def preprocess_dataset(input_file: str, output_file: str):
     # Load the dataset
@@ -62,3 +67,98 @@ def preprocess_dataset(input_file: str, output_file: str):
     # Step 12: Save the preprocessed dataset
     df_balanced.to_csv(output_file, index=False)
     print(f"Preprocessed dataset saved to {output_file}")
+
+def visualize_preprocessed_data(preprocessed_file):
+    # Load preprocessed dataset
+    df = pd.read_csv(preprocessed_file)
+    
+    # Set up the figure with multiple subplots
+    fig, axes = plt.subplots(3, 2, figsize=(18, 18))
+    fig.suptitle('Visualizations of Preprocessed Dataset', fontsize=16, y=0.92)
+
+    # 1. Distribution of the Target Variable
+    sns.countplot(x='abandoned', data=df, ax=axes[0, 0], palette='Set2', hue='abandoned')
+    axes[0, 0].set_title('Target Variable Distribution')
+    axes[0, 0].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
+    axes[0, 0].set_ylabel('Count')
+    axes[0, 0].legend([], [], frameon=False)  # Remove the redundant legend
+
+    # 2. Distribution of Key Numerical Features (price)
+    sns.histplot(data=df, x='price', hue='abandoned', kde=True, palette='coolwarm', bins=30, ax=axes[0, 1])
+    axes[0, 1].set_title('Price Distribution by Abandonment')
+    axes[0, 1].set_xlabel('Price')
+    axes[0, 1].set_ylabel('Count')
+
+    # 3. Correlation Heatmap
+    correlation = df.corr()
+    sns.heatmap(correlation, annot=True, cmap='coolwarm', fmt='.2f', ax=axes[1, 0], cbar_kws={'shrink': 0.8})
+    axes[1, 0].set_title('Correlation Heatmap')
+
+    # 4. Boxplot of grand_total
+    sns.boxplot(data=df, x='abandoned', y='grand_total', palette='coolwarm', ax=axes[1, 1], hue='abandoned', dodge=False)
+    axes[1, 1].set_title('Grand Total Distribution by Abandonment')
+    axes[1, 1].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
+    axes[1, 1].set_ylabel('Grand Total')
+    axes[1, 1].legend([], [], frameon=False)  # Remove redundant legend
+
+    # 5. Distribution of total_purchases
+    sns.histplot(data=df, x='total_purchases', hue='abandoned', kde=True, palette='coolwarm', bins=30, ax=axes[2, 0])
+    axes[2, 0].set_title('Total Purchases Distribution by Abandonment')
+    axes[2, 0].set_xlabel('Total Purchases')
+    axes[2, 0].set_ylabel('Count')
+
+    # 6. Boxplot of total_orders
+    sns.boxplot(data=df, x='abandoned', y='total_orders', palette='coolwarm', ax=axes[2, 1], hue='abandoned', dodge=False)
+    axes[2, 1].set_title('Total Orders Distribution by Abandonment')
+    axes[2, 1].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
+    axes[2, 1].set_ylabel('Total Orders')
+    axes[2, 1].legend([], [], frameon=False)  # Remove redundant legend
+
+    # Adjust layout and display the plots
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+    plt.show()
+
+
+def evaluate_model(model, X_train, y_train, X_test, y_test, model_name):
+    # Track training time and memory usage
+    def train_model():
+        model.fit(X_train, y_train)
+
+    training_time = time.time()
+    mem_usage = memory_usage(train_model, interval=0.1)
+    training_time = time.time() - training_time
+
+    # Evaluate model
+    start_eval = time.time()
+    y_pred = model.predict(X_test)
+    evaluation_time = time.time() - start_eval
+
+    # Compute metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
+
+    print(f"Performance of {model_name}:")
+    print(f"  Accuracy: {accuracy:.2f}")
+    print(f"  Precision: {precision:.2f}")
+    print(f"  Recall: {recall:.2f}")
+    print(f"  F1-Score: {f1:.2f}")
+    print(f"  Training Time: {training_time:.2f} seconds")
+    print(f"  Evaluation Time: {evaluation_time:.2f} seconds")
+    print(f"  Memory Used: {max(mem_usage) - min(mem_usage):.2f} MB")
+    print(f"  Confusion Matrix:\n{cm}\n")
+
+    return {
+        'Model': model_name,
+        'Accuracy': accuracy,
+        'Precision': precision,
+        'Recall': recall,
+        'F1-Score': f1,
+        'Training Time (s)': training_time,
+        'Evaluation Time (s)': evaluation_time,
+        'Memory Used (MB)': max(mem_usage) - min(mem_usage),
+        'Confusion Matrix': cm
+    }
