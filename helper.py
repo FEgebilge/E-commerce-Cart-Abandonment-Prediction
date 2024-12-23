@@ -10,114 +10,130 @@ def preprocess_dataset(input_file: str, output_file: str):
     # Load the dataset
     df = pd.read_csv(input_file)
     
-    # Step 1: Remove Extra Columns (Unnamed columns)
+    # Step 1: Remove unnamed columns
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
 
-    # Step 2: Filter rows to include only 'canceled' and 'complete'
+    # Step 2: Keep only relevant statuses
     df = df[df['status'].isin(['canceled', 'complete'])]
 
-    # Step 3: Map 'status' to 'abandoned/not abandoned' (1: abandoned, 0: not abandoned)
+    # Step 3: Create the target variable ('abandoned')
     df['abandoned'] = df['status'].apply(lambda x: 1 if x == 'canceled' else 0)
 
-    # Step 4: One-hot encode 'category_name_1' (cart contents)
-    category_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-    category_encoded = category_encoder.fit_transform(df[['category_name_1']])
-    category_encoded_df = pd.DataFrame(category_encoded, columns=category_encoder.get_feature_names_out(['category_name_1']))
-    df = pd.concat([df, category_encoded_df], axis=1)
-
-    # Step 5: One-hot encode 'payment_method'
-    payment_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-    payment_encoded = payment_encoder.fit_transform(df[['payment_method']])
-    payment_encoded_df = pd.DataFrame(payment_encoded, columns=payment_encoder.get_feature_names_out(['payment_method']))
-    df = pd.concat([df, payment_encoded_df], axis=1)
-
-    # Step 6: Calculate purchase history for each customer
-    purchase_history = df.groupby('Customer ID').agg(
-        total_purchases=('grand_total', 'sum'),
-        total_orders=('Customer ID', 'count')
+    # Step 4: Aggregate features at the cart level (increment_id)
+    cart_features = df.groupby('increment_id').agg(
+        total_price=('grand_total', 'sum'),
+        total_items=('qty_ordered', 'sum'),
+        total_discount=('discount_amount', 'sum'),
+        num_unique_categories=('category_name_1', 'nunique'),
+        abandoned=('abandoned', 'max'),  # Abandoned cart if any item is canceled
+        payment_method=('payment_method', 'first'),  # Assuming one payment method per cart
+        customer_id=('Customer ID', 'first')  # Customer ID associated with the cart
     ).reset_index()
-    df = df.merge(purchase_history, on='Customer ID', how='left')
 
-    # Step 7: Drop unnecessary columns
-    columns_to_drop = [
-        'status', 'created_at', 'sku', 'increment_id', 'category_name_1',
-        'sales_commission_code', 'Working Date', 'BI Status', ' MV ',
-        'Year', 'Month', 'Customer Since', 'M-Y', 'FY', 'Customer ID', 'payment_method'
-    ]
-    df.drop(columns=columns_to_drop, inplace=True)
+    # Step 5: Remove rows with non-numeric values in numeric columns
+    numeric_cols = ['total_price', 'total_items', 'total_discount', 'num_unique_categories']
+    for col in numeric_cols:
+        cart_features[col] = pd.to_numeric(cart_features[col], errors='coerce')
+    cart_features = cart_features.dropna(subset=numeric_cols)
 
-    # Step 8: Handle missing values
-    df.fillna(0, inplace=True)  # Replace NaN with 0 (can be customized as needed)
+    # Step 6: Create binary flags for category presence in the cart
+    category_flags = pd.get_dummies(df[['increment_id', 'category_name_1']], columns=['category_name_1'])
+    category_flags = category_flags.groupby('increment_id').sum().reset_index()
+    cart_features = pd.merge(cart_features, category_flags, on='increment_id', how='left')
 
-    # Step 9: Feature Scaling
+    # Step 7: One-hot encode payment methods
+    payment_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+    payment_encoded = payment_encoder.fit_transform(cart_features[['payment_method']])
+    payment_encoded_df = pd.DataFrame(payment_encoded, columns=payment_encoder.get_feature_names_out(['payment_method']))
+    cart_features = pd.concat([cart_features, payment_encoded_df], axis=1)
+    cart_features.drop(columns=['payment_method'], inplace=True)
+
+    # Step 8: Add customer purchase history
+    purchase_history = df.groupby('Customer ID').agg(
+        customer_total_spent=('grand_total', 'sum'),
+        customer_total_orders=('increment_id', 'nunique')
+    ).reset_index()
+    cart_features = pd.merge(cart_features, purchase_history, left_on='customer_id', right_on='Customer ID', how='left')
+    cart_features.drop(columns=['Customer ID'], inplace=True)
+
+    # Step 9: Normalize numerical features
     scaler = MinMaxScaler()
-    numerical_features = ['price', 'qty_ordered', 'grand_total', 'discount_amount', 'total_purchases', 'total_orders']
-    df[numerical_features] = scaler.fit_transform(df[numerical_features])
+    numerical_features = ['total_price', 'total_items', 'total_discount', 'num_unique_categories', 'customer_total_spent', 'customer_total_orders']
+    cart_features[numerical_features] = scaler.fit_transform(cart_features[numerical_features])
 
-    # Step 10: Investigate and Handle Outliers (e.g., Clipping to 95th percentile)
-    for col in numerical_features:
-        upper_limit = df[col].quantile(0.95)
-        df[col] = df[col].clip(upper=upper_limit)
+    # Step 10: Drop ID columns before training
+    cart_features.drop(columns=['increment_id', 'customer_id'], inplace=True, errors='ignore')
 
-    # Step 11: Balance Target Variable using Undersampling
-    abandoned_df = df[df['abandoned'] == 1]
-    not_abandoned_df = df[df['abandoned'] == 0].sample(n=len(abandoned_df), random_state=42)
-    df_balanced = pd.concat([abandoned_df, not_abandoned_df])
+    # Step 11: Handle missing values
+    cart_features.fillna(0, inplace=True)
 
     # Step 12: Save the preprocessed dataset
-    df_balanced.to_csv(output_file, index=False)
+    cart_features.to_csv(output_file, index=False)
     print(f"Preprocessed dataset saved to {output_file}")
 
+
 def visualize_preprocessed_data(preprocessed_file):
-    # Load preprocessed dataset
+    # Load the preprocessed dataset
     df = pd.read_csv(preprocessed_file)
-    
+
     # Set up the figure with multiple subplots
-    fig, axes = plt.subplots(3, 2, figsize=(18, 18))
-    fig.suptitle('Visualizations of Preprocessed Dataset', fontsize=16, y=0.92)
+    fig, axes = plt.subplots(3, 2, figsize=(18, 20))
+    fig.suptitle('Abandonment Analysis', fontsize=16, y=0.92)
 
-    # 1. Distribution of the Target Variable
-    sns.countplot(x='abandoned', data=df, ax=axes[0, 0], palette='Set2', hue='abandoned')
-    axes[0, 0].set_title('Target Variable Distribution')
+    # 1. Total Price vs. Abandonment
+    sns.boxplot(data=df, x='abandoned', y='total_price', hue='abandoned', palette='coolwarm', ax=axes[0, 0], dodge=False, legend=False)
+    axes[0, 0].set_title('Total Price vs Abandonment')
     axes[0, 0].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
-    axes[0, 0].set_ylabel('Count')
-    axes[0, 0].legend([], [], frameon=False)  # Remove the redundant legend
+    axes[0, 0].set_ylabel('Total Price')
 
-    # 2. Distribution of Key Numerical Features (price)
-    sns.histplot(data=df, x='price', hue='abandoned', kde=True, palette='coolwarm', bins=30, ax=axes[0, 1])
-    axes[0, 1].set_title('Price Distribution by Abandonment')
-    axes[0, 1].set_xlabel('Price')
-    axes[0, 1].set_ylabel('Count')
+    # 2. Total Items vs. Abandonment
+    sns.boxplot(data=df, x='abandoned', y='total_items', hue='abandoned', palette='coolwarm', ax=axes[0, 1], dodge=False, legend=False)
+    axes[0, 1].set_title('Total Items vs Abandonment')
+    axes[0, 1].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
+    axes[0, 1].set_ylabel('Total Items')
 
-    # 3. Correlation Heatmap
-    correlation = df.corr()
-    sns.heatmap(correlation, annot=True, cmap='coolwarm', fmt='.2f', ax=axes[1, 0], cbar_kws={'shrink': 0.8})
-    axes[1, 0].set_title('Correlation Heatmap')
+    # 3. Abandonment Rate by Payment Method
+    if 'abandoned' in df.columns and any(col.startswith('payment_method_') for col in df.columns):
+        payment_methods = [col for col in df.columns if col.startswith('payment_method_')]
+        payment_data = {method: df.groupby(method)['abandoned'].mean().iloc[1] for method in payment_methods}
+        payment_data = pd.DataFrame(list(payment_data.items()), columns=['Payment Method', 'Abandonment Rate'])
+        sns.barplot(x='Abandonment Rate', y='Payment Method', data=payment_data, ax=axes[1, 0])
+        axes[1, 0].set_title('Abandonment Rate by Payment Method')
+        axes[1, 0].set_xlabel('Abandonment Rate')
+        axes[1, 0].set_ylabel('Payment Method')
+    else:
+        axes[1, 0].set_visible(False)
 
-    # 4. Boxplot of grand_total
-    sns.boxplot(data=df, x='abandoned', y='grand_total', palette='coolwarm', ax=axes[1, 1], hue='abandoned', dodge=False)
-    axes[1, 1].set_title('Grand Total Distribution by Abandonment')
-    axes[1, 1].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
-    axes[1, 1].set_ylabel('Grand Total')
-    axes[1, 1].legend([], [], frameon=False)  # Remove redundant legend
+    # 4. Abandonment Rate by Categories
+    if 'abandoned' in df.columns and any(col.startswith('category_name_1_') for col in df.columns):
+        category_columns = [col for col in df.columns if col.startswith('category_name_1_')]
+        category_data = {category: df.groupby(category)['abandoned'].mean().iloc[1] for category in category_columns}
+        category_data = pd.DataFrame(list(category_data.items()), columns=['Category', 'Abandonment Rate'])
+        sns.barplot(x='Abandonment Rate', y='Category', data=category_data, ax=axes[1, 1])
+        axes[1, 1].set_title('Abandonment Rate by Categories')
+        axes[1, 1].set_xlabel('Abandonment Rate')
+        axes[1, 1].set_ylabel('Categories')
+    else:
+        axes[1, 1].set_visible(False)
 
-    # 5. Distribution of total_purchases
-    sns.histplot(data=df, x='total_purchases', hue='abandoned', kde=True, palette='coolwarm', bins=30, ax=axes[2, 0])
-    axes[2, 0].set_title('Total Purchases Distribution by Abandonment')
-    axes[2, 0].set_xlabel('Total Purchases')
-    axes[2, 0].set_ylabel('Count')
+    # 5. Total Orders vs. Abandonment
+    sns.boxplot(data=df, x='abandoned', y='customer_total_orders', hue='abandoned', palette='coolwarm', ax=axes[2, 0], dodge=False, legend=False)
+    axes[2, 0].set_title('Customer Total Orders vs Abandonment')
+    axes[2, 0].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
+    axes[2, 0].set_ylabel('Total Orders')
 
-    # 6. Boxplot of total_orders
-    sns.boxplot(data=df, x='abandoned', y='total_orders', palette='coolwarm', ax=axes[2, 1], hue='abandoned', dodge=False)
-    axes[2, 1].set_title('Total Orders Distribution by Abandonment')
+    # 6. Total Spending vs. Abandonment
+    sns.boxplot(data=df, x='abandoned', y='customer_total_spent', hue='abandoned', palette='coolwarm', ax=axes[2, 1], dodge=False, legend=False)
+    axes[2, 1].set_title('Customer Total Spending vs Abandonment')
     axes[2, 1].set_xlabel('Abandoned (0: Not Abandoned, 1: Abandoned)')
-    axes[2, 1].set_ylabel('Total Orders')
-    axes[2, 1].legend([], [], frameon=False)  # Remove redundant legend
+    axes[2, 1].set_ylabel('Total Spending')
 
     # Adjust layout and display the plots
     plt.tight_layout()
     plt.subplots_adjust(top=0.9)
     plt.show()
+
+
 
 
 def evaluate_model(model, X_train, y_train, X_test, y_test, model_name):
